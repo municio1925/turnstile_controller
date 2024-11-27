@@ -57,6 +57,7 @@ class VideoUploader:
             logger.info(f"Deleted local file: {file_path}")
 
             entrance_log_uuid = os.path.splitext(file_name)[0]
+            await asyncio.sleep(5)
             await self.set_has_video_to_true_in_db(entrance_log_uuid)
         except ClientError as e:
             logger.error(f"Failed to upload {file_name}: {e}")
