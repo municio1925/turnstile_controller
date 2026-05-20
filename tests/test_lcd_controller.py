@@ -31,8 +31,14 @@ class FakeChip:
 
 
 class FakeLCD:
+    should_fail_probe = False
+
     def __init__(self, *args, **kwargs):
         self.calls = []
+
+    def probe(self):
+        if self.should_fail_probe:
+            raise OSError("I2C device not available")
 
     def clear(self):
         self.calls.append(("clear",))
@@ -53,6 +59,7 @@ def load_lcd_controller(monkeypatch):
     monkeypatch.setattr(module, "LCD", FakeLCD)
     monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
     FakeChip.line = FakeLine()
+    FakeLCD.should_fail_probe = False
     return module
 
 
@@ -101,3 +108,37 @@ def test_dark_mode_cleanup_turns_display_relay_off(monkeypatch):
 
     assert FakeChip.line.values == [1, 0, 1]
     assert FakeChip.line.released is True
+
+
+def test_dark_mode_does_not_toggle_display_relay_when_lcd_probe_fails(monkeypatch):
+    module = load_lcd_controller(monkeypatch)
+    FakeLCD.should_fail_probe = True
+    controller = module.LCDController(
+        use_lcd=True,
+        dark_mode=True,
+        relay_pin=69,
+        relay_trigger="LOW",
+        scroll_delay=0,
+    )
+
+    controller.display_text_on_lcd("Fallo lector USB", "Reintentando", timeout=2)
+
+    assert FakeChip.line.values == [1]
+
+
+def test_dark_mode_retries_lcd_after_probe_failure(monkeypatch):
+    module = load_lcd_controller(monkeypatch)
+    FakeLCD.should_fail_probe = True
+    controller = module.LCDController(
+        use_lcd=True,
+        dark_mode=True,
+        relay_pin=69,
+        relay_trigger="LOW",
+        scroll_delay=0,
+    )
+
+    controller.display_text_on_lcd("Fallo lector USB", "Reintentando", timeout=2)
+    FakeLCD.should_fail_probe = False
+    controller.display_text_on_lcd("Fallo lector USB", "Reintentando", timeout=2)
+
+    assert FakeChip.line.values == [1, 0, 1]

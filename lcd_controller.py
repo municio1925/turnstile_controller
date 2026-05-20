@@ -62,10 +62,11 @@ class LCD:
     
     def _write_byte(self, data):
         """Write byte to I2C bus"""
-        try:
-            self.bus.write_byte(self.address, data)
-        except:
-            pass
+        self.bus.write_byte(self.address, data)
+
+    def probe(self):
+        """Check that the I2C backpack responds before toggling external light."""
+        self.bus.write_byte(self.address, self.backlight_state)
     
     def _write_nibble(self, data):
         """Write 4-bit nibble to LCD"""
@@ -155,6 +156,8 @@ class LCDController:
         self.max_char_count = max_char_count
         self.scroll_delay = scroll_delay
         self.i2c_bus = i2c_bus
+        self._lock = threading.Lock()
+        self.lcd = None
         
         # Parse LCD address
         if lcd_address:
@@ -166,12 +169,7 @@ class LCDController:
             self.lcd_address = 0x27
             
         if use_lcd:
-            try:
-                self.lcd = LCD(bus_num=self.i2c_bus, address=self.lcd_address)
-                logging.info(f"LCD initialized on I2C bus {self.i2c_bus}, address 0x{self.lcd_address:02X}")
-            except Exception as e:
-                logging.error(f"Failed to initialize LCD: {e}")
-                self.lcd = None
+            self._initialize_lcd()
                 
         self.dark_mode = dark_mode
         self.relay_chip = None
@@ -190,6 +188,31 @@ class LCDController:
             except Exception as e:
                 logging.error(f"Failed to setup display relay: {e}")
 
+    def _initialize_lcd(self):
+        try:
+            self.lcd = LCD(bus_num=self.i2c_bus, address=self.lcd_address)
+            logging.info(f"LCD initialized on I2C bus {self.i2c_bus}, address 0x{self.lcd_address:02X}")
+            return True
+        except Exception as e:
+            logging.error(f"Failed to initialize LCD: {e}")
+            self.lcd = None
+            return False
+
+    def _ensure_lcd_available(self):
+        if not self.use_lcd:
+            return False
+
+        if not self.lcd and not self._initialize_lcd():
+            return False
+
+        try:
+            self.lcd.probe()
+            return True
+        except Exception as e:
+            logging.error(f"LCD I2C probe failed: {e}")
+            self.lcd = None
+            return False
+
     def _set_display_relay(self, enabled):
         if not self.dark_mode or not self.relay_line:
             return
@@ -198,7 +221,11 @@ class LCDController:
     
     def clear(self):
         if self.use_lcd and self.lcd:
-            self.lcd.clear()
+            try:
+                self.lcd.clear()
+            except Exception as e:
+                logging.error(f"LCD clear error: {e}")
+                self.lcd = None
         else:
             logging.info("Clearing display")
 
@@ -211,27 +238,41 @@ class LCDController:
         return [line[i : i + self.max_char_count] for i in range(scroll_positions)]
 
     def display_text_on_lcd(self, line1, line2, timeout=None):
-        if not self.use_lcd or not self.lcd:
-            logging.info(f"Display: {line1} | {line2}")
+        if not self.use_lcd:
+            logging.info(f"Display unavailable: {line1} | {line2}")
             return
 
-        try:
-            self._set_display_relay(True)
-            lines_to_scroll1 = self.scroll_text(line1)
-            lines_to_scroll2 = self.scroll_text(line2)
+        with self._lock:
+            if not self._ensure_lcd_available():
+                logging.info(f"Display unavailable: {line1} | {line2}")
+                return
 
-            for i in range(max(len(lines_to_scroll1), len(lines_to_scroll2))):
-                self.lcd.clear()
-                self.lcd.text(unidecode(lines_to_scroll1[i % len(lines_to_scroll1)]), 1)
-                self.lcd.text(unidecode(lines_to_scroll2[i % len(lines_to_scroll2)]), 2)
-                time.sleep(self.scroll_delay)
+            relay_enabled = False
+            keep_relay_on = False
+            try:
+                lines_to_scroll1 = self.scroll_text(line1)
+                lines_to_scroll2 = self.scroll_text(line2)
 
-            if timeout is not None:
-                time.sleep(max(0, timeout - self.scroll_delay))
-                self.lcd.clear()
-                self._set_display_relay(False)
-        except Exception as e:
-            logging.error(f"LCD display error: {e}")
+                self._set_display_relay(True)
+                relay_enabled = True
+
+                for i in range(max(len(lines_to_scroll1), len(lines_to_scroll2))):
+                    self.lcd.clear()
+                    self.lcd.text(unidecode(lines_to_scroll1[i % len(lines_to_scroll1)]), 1)
+                    self.lcd.text(unidecode(lines_to_scroll2[i % len(lines_to_scroll2)]), 2)
+                    time.sleep(self.scroll_delay)
+
+                if timeout is None:
+                    keep_relay_on = True
+                else:
+                    time.sleep(max(0, timeout - self.scroll_delay))
+                    self.lcd.clear()
+            except Exception as e:
+                logging.error(f"LCD display error: {e}")
+                self.lcd = None
+            finally:
+                if relay_enabled and not keep_relay_on:
+                    self._set_display_relay(False)
 
     def display(self, line1, line2, timeout=2):
         self.display_text_on_lcd(line1, line2, timeout)

@@ -294,11 +294,18 @@ if USE_LCD and LCDController:
     # Initialize LCD
     try:
         i2c_bus = int(os.getenv("LCD_I2C_BUS", "0"))
+        display_relay_pin = RELAY_PIN_DISPLAY
+        if display_relay_pin is not None and display_relay_pin == RELAY_PIN_DOOR:
+            logger.critical(
+                "Display relay pin %s matches door relay pin. Disabling display relay for safety.",
+                display_relay_pin,
+            )
+            display_relay_pin = None
         lcd = LCDController(
             use_lcd=USE_LCD,
             lcd_address=LCD_I2C_ADDRESS,
             dark_mode=DARK_MODE,
-            relay_pin=RELAY_PIN_DISPLAY,
+            relay_pin=display_relay_pin,
             relay_trigger=RELAY_TRIGGER,
             i2c_bus=i2c_bus,
         )
