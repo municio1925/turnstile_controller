@@ -21,6 +21,7 @@ import cv2
 
 from camera_device import open_camera_capture
 from usb_diagnostics import record_component_state
+from inotify_watch import DirectoryWatcher
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("VideoCamera")
@@ -43,7 +44,11 @@ class VideoCamera:
         self.VIDEO_FORMAT = "mp4"  # Final format of the recorded video files
 
         self.RECORDING_DURATION = 6  # Duration to record after trigger (in seconds)
-        self.QR_DATA_CHECK_INTERVAL = 0.2  # Interval to check for QR data (in seconds)
+        self.QR_DATA_CHECK_INTERVAL = 0.2  # Polling fallback interval if inotify is unavailable (seconds)
+        # When the inotify watch is armed the loop wakes the instant record.txt
+        # appears; this is only the idle fallback cadence so camera health checks
+        # keep running and any missed event is caught quickly.
+        self.TRIGGER_IDLE_WAKE_SECONDS = float(os.getenv("CAMERA_TRIGGER_IDLE_WAKE_SECONDS", 2))
         self.CAMERA_HEALTH_CHECK_INTERVAL = float(os.getenv("CAMERA_HEALTH_CHECK_INTERVAL", 5))
 
         # Recording variables
@@ -187,6 +192,20 @@ class VideoCamera:
 
     async def run(self, global_qr_data=None, lock=None):
         """Asynchronous method to check for QR data and start recording."""
+        # Event-driven trigger: wake the instant the MQTT receiver drops
+        # record.txt instead of polling every QR_DATA_CHECK_INTERVAL. Falls back
+        # to the original polling if inotify can't be armed, so behaviour is
+        # never worse than before.
+        try:
+            watcher = DirectoryWatcher(self.RECORDING_DIR)
+            logger.info("Watching %s for triggers via inotify (instant).", self.RECORDING_DIR)
+        except OSError as watch_err:
+            logger.warning(
+                "inotify unavailable (%s); falling back to %.1fs polling.",
+                watch_err,
+                self.QR_DATA_CHECK_INTERVAL,
+            )
+            watcher = None
         try:
             while True:
                 self.check_camera_health()
@@ -194,13 +213,18 @@ class VideoCamera:
                 if filenames:
                     data = {"uuid": filenames[0], "additional_uuids": filenames[1:]}
                     await self.start_recording(data)
-                await asyncio.sleep(self.QR_DATA_CHECK_INTERVAL)
+                if watcher is None:
+                    await asyncio.sleep(self.QR_DATA_CHECK_INTERVAL)
+                else:
+                    await watcher.wait(timeout=self.TRIGGER_IDLE_WAKE_SECONDS)
         except asyncio.CancelledError:
             logger.info("Run loop cancelled.")
             raise
         except Exception as e:
             logger.exception("Exception in VideoCamera.run")
         finally:
+            if watcher is not None:
+                watcher.close()
             # Clean up resources when done
             self.cleanup()
 

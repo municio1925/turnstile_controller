@@ -9,6 +9,7 @@ import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 
 from utils import SentryLogger
+from inotify_watch import DirectoryWatcher
 import sentry_sdk
 
 try:
@@ -28,6 +29,11 @@ sentry_sdk.init(
 
 # === Constants ===
 SCAN_INTERVAL_MS = 250
+# Fallback rescan cadence when the inotify watch is armed: triggers normally
+# wake the loop within ~1 ms, so this only catches the rare event that slipped
+# past inotify (e.g. files queued while the broker was unreachable). Far less
+# frequent than the old fixed poll, with none of the per-trigger latency.
+TRIGGER_FALLBACK_SCAN_SECONDS = float(os.getenv("TRIGGER_FALLBACK_SCAN_SECONDS", 2))
 MQTT_PUBLISH_RETRY_SECONDS = float(os.getenv("MQTT_PUBLISH_RETRY_SECONDS", 120))
 MQTT_INITIAL_RETRY_DELAY_SECONDS = float(os.getenv("MQTT_INITIAL_RETRY_DELAY_SECONDS", 1))
 MQTT_MAX_RETRY_DELAY_SECONDS = float(os.getenv("MQTT_MAX_RETRY_DELAY_SECONDS", 15))
@@ -145,9 +151,30 @@ async def scan_and_send(recording_dir: str):
     """
     # Use MQTT topic from environment variable; default to "home/raspberry"
     mqtt_topic = os.getenv("MQTT_TOPIC", "home/raspberry")
-    while True:
-        await scan_and_send_once(recording_dir, mqtt_topic=mqtt_topic)
-        await asyncio.sleep(SCAN_INTERVAL_MS / 1000)
+    # Event-driven hand-off: block on an inotify watch of the trigger directory
+    # so a freshly written trigger file is sent within ~1 ms instead of waiting
+    # for the next poll tick. qr.py is unchanged — it still just drops a file —
+    # so the door can never be slowed or broken by anything on the MQTT side.
+    try:
+        watcher = DirectoryWatcher(recording_dir)
+        logger.info("Watching %s for triggers via inotify (instant).", recording_dir)
+    except OSError as watch_err:
+        logger.warning(
+            "inotify unavailable (%s); falling back to %dms polling.",
+            watch_err,
+            SCAN_INTERVAL_MS,
+        )
+        watcher = None
+    try:
+        while True:
+            await scan_and_send_once(recording_dir, mqtt_topic=mqtt_topic)
+            if watcher is None:
+                await asyncio.sleep(SCAN_INTERVAL_MS / 1000)
+            else:
+                await watcher.wait(timeout=TRIGGER_FALLBACK_SCAN_SECONDS)
+    finally:
+        if watcher is not None:
+            watcher.close()
 
 
 def restore_incomplete_sends(recording_dir: str):
