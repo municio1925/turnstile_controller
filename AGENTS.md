@@ -194,7 +194,8 @@ Su estado online/offline sale en la tabla legacy (ver §1 / `AGENTS.queries.md`)
 actualiza la tarea Celery `task_sync_env_files` (`fitnessmanager_api.tasks`),
 agendada en django_celery_beat como `sync_env_files_noon` (**12:00**) y
 `sync_env_files_afternoon` (**16:00**, hora España, tz `Europe/Madrid`). En cada
-pasada coge la lista de dispositivos de **Notion**, hace **SSH a cada uno** para leer
+pasada coge la lista de dispositivos de **la propia tabla `env_files`** (`name` +
+`port` + `ssh_command`; Notion quedó retirado), hace **SSH a cada uno** para leer
 su `.env` y escribe `status` (`SUCCESS` si conectó / `ERROR` si no) y `last_success_at`
 (solo al conectar). O sea: `env_files` refleja **si el último sondeo de las 12:00/16:00
 pudo entrar por SSH**, no el estado en tiempo real → un dispositivo «atrasado ~20 h»
