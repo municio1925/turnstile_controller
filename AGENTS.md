@@ -51,8 +51,16 @@ Traduce las palabras del reporte:
 - Un mismo aparato puede estar en **las dos tablas**: si la fila ODROID trae el
   SSH vacío, busca su SSH en la tabla legacy por el lugar (puede ser el mismo
   equipo en transición; algunos legacy entran con usuario **root**, no `manager`).
-- «Online» = **heartbeat reciente**. Un estado/última-conexión viejo (p.ej.
-  >15–30 min) trátalo como **caído** aunque el flag diga «SUCCESS/online».
+- **«Online» se mide DISTINTO según la tabla — no uses el mismo umbral para las dos:**
+  - **ODROID** (`fitnessmanager_api_device.last_seen_at`): es heartbeat real
+    (frpc/`device_configurator`). Aquí sí: `last_seen_at` viejo (>15–30 min) =
+    **caído** aunque el flag diga «online».
+  - **Legacy** (`env_files.last_success_at` / `status`): **NO es heartbeat**. Se
+    refresca solo **2 veces al día** (12:00 y 16:00 hora España) con un sondeo SSH
+    desde el servidor (ver §8). Un `last_success_at` de hasta **~20 h** es **normal**
+    (el hueco nocturno entre el sync de las 16:00 y el de las 12:00) y **NO** significa
+    caído. Para saber si un legacy está vivo AHORA, **entra por SSH** (la verdad) o
+    **dispara el sync** manualmente (§8); no te fíes solo de la antigüedad.
 - «Cámara» a veces **no es un equipo aparte** sino el vídeo de una entrada. Si no
   encuentras dispositivo-cámara, mira si la entrada tiene el **vídeo activado**
   antes de concluir que «no existe».
@@ -162,6 +170,29 @@ Un `reboot` suele restablecer un túnel que parpadea.
 ## 8. Dispositivos LEGACY (Raspberry Pi)
 
 Su estado online/offline sale en la tabla legacy (ver §1 / `AGENTS.queries.md`).
+
+**Cómo se llena `env_files` (clave para no malinterpretar el «offline»):** lo
+actualiza la tarea Celery `task_sync_env_files` (`fitnessmanager_api.tasks`),
+agendada en django_celery_beat como `sync_env_files_noon` (**12:00**) y
+`sync_env_files_afternoon` (**16:00**, hora España, tz `Europe/Madrid`). En cada
+pasada coge la lista de dispositivos de **Notion**, hace **SSH a cada uno** para leer
+su `.env` y escribe `status` (`SUCCESS` si conectó / `ERROR` si no) y `last_success_at`
+(solo al conectar). O sea: `env_files` refleja **si el último sondeo de las 12:00/16:00
+pudo entrar por SSH**, no el estado en tiempo real → un dispositivo «atrasado ~20 h»
+de madrugada/mañana es **esperado, no avería**. (Esto NO es un fallo de Celery beat:
+beat está vivo y la tarea tarda ~10 s; «N failed» son equipos caídos o plantillas.)
+- Los puertos **`*Master`** (`tornoRaspberryMaster`, `odroidMaster`, `cameraMaster`)
+  salen **siempre** en `ERROR`: son tarjetas SD plantilla, **no clientes** → ignóralos.
+- **Para forzar una lectura fresca on-demand** (en el backend; es de solo lectura,
+  solo hace SSH + upsert de estado):
+  ```bash
+  docker exec fitnessmanager-web-1 python manage.py shell -c \
+    "from fitnessmanager_api.tasks import task_sync_env_files; print(task_sync_env_files.delay().id)"
+  docker logs --since 3m fitnessmanager-celery_worker-1   # «[puerto] alias: OK/FAILED» + «Done: N success, M failed»
+  ```
+  Si quieres saber YA si un legacy está vivo, esto (o un SSH directo) manda; la
+  antigüedad de `env_files` no.
+
 Si está **offline**:
 - En **puertas/tornos** suele ser que **el dueño lo apagó** (poco grave).
 - En **cámaras** suele ser que **se ha caído**: el sistema legacy es inestable.
