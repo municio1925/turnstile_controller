@@ -5,21 +5,41 @@ dispositivo en una instalación. Cada gimnasio tiene una **puerta/torno** (lee e
 QR y abre) y, si hay vídeo, una **cámara**. Todos los servicios son units de
 `systemd` y el código vive en `~/turnstile_controller`.
 
+## ⚡ Lo PRIMERO de todo: pide la contraseña
+
+En cuanto te pidan revisar o depurar un dispositivo, tu **primera acción** es
+**pedirle al usuario la contraseña SSH** del dispositivo. **No** mires el código,
+**no** intentes conectar y **no** investigues nada antes de tenerla: pídela de
+inmediato y espera. (Está en el fichero de contraseñas; nunca en este repo.) Así
+no pierdes tiempo.
+
+- Problema de **cámara** (no graba): pide **a la vez dos contraseñas** — la de la
+  **cámara** y la del **dispositivo disparador** (puerta/torno) — porque el fallo
+  puede estar en cualquiera de los dos.
+- Problema de **puerta** (no abre, contar entradas, ver fallos): basta la
+  contraseña de ese dispositivo.
+
 ## 1. Conectarse por SSH
 
-1. El comando SSH de cada dispositivo está en el **frontend**:
-   **Control de Acceso → Dispositivos → despliega (uncollapse) el dispositivo →
-   ahí aparece el comando «SSH remoto»** listo para copiar. Cada dispositivo
-   tiene su propio puerto. Ejemplo:
+1. El comando SSH exacto (con su puerto) está en el **frontend**: **Control de
+   Acceso → Dispositivos → despliega (uncollapse) el dispositivo → comando
+   «SSH remoto»**. Ejemplo: `ssh -p 6020 manager@188.245.164.175` (usuario
+   siempre `manager`).
+2. La **contraseña** la da el usuario (del fichero de contraseñas). **Nunca la
+   escribas en este repo — es público**; en los ejemplos usa el marcador
+   `DEVICE_SSH_PASSWORD`.
+3. `ssh` normal se queda esperando la contraseña y **el agente no puede
+   teclearla**. Pásala de forma no interactiva con `sshpass`:
+   ```bash
+   sshpass -p 'DEVICE_SSH_PASSWORD' ssh -o StrictHostKeyChecking=no \
+     -p 6020 manager@188.245.164.175 'cd ~/turnstile_controller && <comando>'
    ```
-   ssh -p 6020 manager@188.245.164.175
-   ```
-2. Usuario siempre `manager`. La **contraseña está en el fichero de
-   contraseñas** (`Manual_..._Passwords`); la introduce la persona al conectarse.
-   **Nunca escribas contraseñas reales en este repo — es público.** En los
-   ejemplos se usa el marcador `DEVICE_SSH_PASSWORD`.
-3. Al entrar: `cd ~/turnstile_controller`. La configuración (broker MQTT, cámara,
-   relé, S3…) está en `~/turnstile_controller/.env`.
+   Si falta `sshpass`: instálalo (`sudo apt-get install -y sshpass`, o en mac
+   `brew install hudochenkov/sshpass/sshpass`); alternativa: un script con
+   `paramiko`.
+4. Para `sudo` en el dispositivo (p.ej. reiniciar un servicio) la contraseña es
+   la misma: `echo 'DEVICE_SSH_PASSWORD' | sudo -S systemctl restart <servicio>`.
+5. La config (broker MQTT, cámara, relé, S3…) está en `~/turnstile_controller/.env`.
 
 ## 2. Ver logs
 
@@ -28,7 +48,6 @@ journalctl -u <servicio> -n 80 --no-pager      # últimas 80 líneas
 journalctl -u <servicio> -f                     # en vivo (seguir)
 journalctl -u <servicio> --since "10 min ago"   # ventana de tiempo
 systemctl status <servicio>                      # ¿activo / fallido?
-sudo systemctl restart <servicio>               # reiniciar (pide la contraseña)
 ```
 
 ## 3. Mapa de servicios
@@ -74,18 +93,17 @@ Pistas: `mqtt-sender` envía pero `mqtt-receiver` no recibe → `MQTT_BROKER`
 incorrecto (la IP de la cámara cambió) o WiFi inestable. Graba pero no aparece en
 el panel → mira `upload`. `videorecorder` con errores de apertura → cámara USB.
 
-## 5. Problema: la puerta NO abre (la gente no puede entrar)
+## 5. Problema: la puerta (no abre, o revisar entradas/fallos del día)
 
-Mira sobre todo el lector de QR del disparador:
+Todo está en el lector de QR del disparador, `qr_script_a` (y `qr_script_b` si
+hay dos lectores):
 ```bash
-journalctl -u qr_script_a -n 80 --no-pager
+journalctl -u qr_script_a -n 80 --no-pager                  # últimas lecturas
+journalctl -u qr_script_a --since today --no-pager          # actividad de HOY (entradas)
+journalctl -u qr_script_a --since today --no-pager | grep -iE "error|fail|exception|warning"   # fallos de hoy
 ```
-Si la puerta tiene **dos entradas / dos lectores**, mira también el segundo:
-```bash
-journalctl -u qr_script_b -n 80 --no-pager
-```
-Revisa toda la traza: lectura del QR, validación contra el backend y
-accionamiento del relé.
+Si hay dos entradas/lectores, repite con `qr_script_b`. En la traza verás la
+lectura del QR, la validación contra el backend y el accionamiento del relé.
 
 ## 6. Problema: el dispositivo aparece «sin conexión» en el frontend
 
