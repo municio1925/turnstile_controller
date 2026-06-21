@@ -5,41 +5,53 @@ dispositivo en una instalación. Cada gimnasio tiene una **puerta/torno** (lee e
 QR y abre) y, si hay vídeo, una **cámara**. Todos los servicios son units de
 `systemd` y el código vive en `~/turnstile_controller`.
 
-## ⚡ Lo PRIMERO de todo: pide la contraseña
+## ⚡ Lo PRIMERO de todo: carga las credenciales
 
-En cuanto te pidan revisar o depurar un dispositivo, tu **primera acción** es
-**pedirle al usuario la contraseña SSH** del dispositivo. **No** mires el código,
-**no** intentes conectar y **no** investigues nada antes de tenerla: pídela de
-inmediato y espera. (Está en el fichero de contraseñas; nunca en este repo.) Así
-no pierdes tiempo.
+Antes de conectar a nada, carga el fichero **`.env.agents`** (en la raíz del
+repo, **gitignored**) para tener las contraseñas como variables de entorno:
 
-- Problema de **cámara** (no graba): pide **a la vez dos contraseñas** — la de la
-  **cámara** y la del **dispositivo disparador** (puerta/torno) — porque el fallo
-  puede estar en cualquiera de los dos.
-- Problema de **puerta** (no abre, contar entradas, ver fallos): basta la
-  contraseña de ese dispositivo.
+```bash
+set -a; source .env.agents; set +a
+```
+
+**No** abras, `cat`, `grep` ni imprimas ese fichero ni sus valores — solo
+súrcalo y usa las variables. Si **no existe**, créalo copiando
+`.env.agents.example` y rellenándolo con el fichero de contraseñas (o pídele los
+valores al usuario). Variables que provee:
+
+- `DEVICE_SSH_PASSWORD` — contraseña de los ODROID/Raspberry (puertas, tornos,
+  cámaras). **Es la que necesitas casi siempre.** Acompañada de `DEVICE_SSH_USER`
+  (`manager`; algún ODROID usa `root`) y `DEVICE_SSH_HOST` (el relay FRP).
+- `INFRASTRUCTURE_SSH_PASSWORD` + `BACKEND_SSH` / `FRONTEND_SSH` /
+  `FRP_JUMPHOST_SSH` — solo si hay que depurar el turnstile **junto con el
+  backend o el frontend** (mirar logs del servidor, etc.).
 
 ## 1. Conectarse por SSH
 
-1. El comando SSH exacto (con su puerto) está en el **frontend**: **Control de
-   Acceso → Dispositivos → despliega (uncollapse) el dispositivo → comando
-   «SSH remoto»**. Ejemplo: `ssh -p 6020 manager@188.245.164.175` (usuario
-   siempre `manager`).
-2. La **contraseña** la da el usuario (del fichero de contraseñas). **Nunca la
-   escribas en este repo — es público**; en los ejemplos usa el marcador
-   `DEVICE_SSH_PASSWORD`.
-3. `ssh` normal se queda esperando la contraseña y **el agente no puede
-   teclearla**. Pásala de forma no interactiva con `sshpass`:
+1. El comando SSH exacto (con su **puerto**) está en el **frontend**: **Control
+   de Acceso → Dispositivos → uncollapse → «SSH remoto»**. Cada dispositivo tiene
+   su puerto; el host es `$DEVICE_SSH_HOST` y el usuario `manager`.
+2. `ssh` normal se queda esperando la contraseña y **el agente no puede
+   teclearla**. Pásala con `sshpass` usando la variable ya cargada:
    ```bash
-   sshpass -p 'DEVICE_SSH_PASSWORD' ssh -o StrictHostKeyChecking=no \
-     -p 6020 manager@188.245.164.175 'cd ~/turnstile_controller && <comando>'
+   sshpass -p "$DEVICE_SSH_PASSWORD" ssh -o StrictHostKeyChecking=no \
+     -p 6020 "$DEVICE_SSH_USER@$DEVICE_SSH_HOST" 'cd ~/turnstile_controller && <comando>'
    ```
-   Si falta `sshpass`: instálalo (`sudo apt-get install -y sshpass`, o en mac
-   `brew install hudochenkov/sshpass/sshpass`); alternativa: un script con
-   `paramiko`.
-4. Para `sudo` en el dispositivo (p.ej. reiniciar un servicio) la contraseña es
-   la misma: `echo 'DEVICE_SSH_PASSWORD' | sudo -S systemctl restart <servicio>`.
-5. La config (broker MQTT, cámara, relé, S3…) está en `~/turnstile_controller/.env`.
+   Si falta `sshpass`: `sudo apt-get install -y sshpass` (o en mac
+   `brew install hudochenkov/sshpass/sshpass`); alternativa: un script con `paramiko`.
+3. Para `sudo` en el dispositivo (reiniciar un servicio) usa la misma contraseña
+   por stdin:
+   ```bash
+   sshpass -p "$DEVICE_SSH_PASSWORD" ssh -p 6020 "$DEVICE_SSH_USER@$DEVICE_SSH_HOST" \
+     "echo \"$DEVICE_SSH_PASSWORD\" | sudo -S systemctl restart mqtt-sender"
+   ```
+4. Para entrar a un **servidor** (backend / frontend / FRP) en lugar de a un
+   dispositivo, usa `INFRASTRUCTURE_SSH_PASSWORD` con el destino correspondiente:
+   ```bash
+   sshpass -p "$INFRASTRUCTURE_SSH_PASSWORD" ssh -o StrictHostKeyChecking=no "$BACKEND_SSH" '<comando>'
+   ```
+5. La config del dispositivo (broker MQTT, cámara, relé, S3…) está en
+   `~/turnstile_controller/.env`.
 
 ## 2. Ver logs
 
@@ -66,8 +78,7 @@ systemctl status <servicio>                      # ¿activo / fallido?
 ## 4. Problema: la cámara NO graba (vídeo)
 
 El flujo cruza **dos** dispositivos, así que necesitas SSH **a la cámara** y, a
-ser posible, **también al dispositivo disparador** (puerta/torno). Pide las dos
-contraseñas. Cadena completa:
+ser posible, **también al dispositivo disparador** (puerta/torno). Cadena completa:
 
 1. Disparador · `qr_script_a` lee el QR y deja un fichero de disparo en `RECORDING_DIR`.
 2. Disparador · `mqtt-sender` ve el fichero y publica `[uuid, ts]` al broker de la cámara (`MQTT_BROKER` en `.env` = IP LAN de la cámara).
@@ -103,7 +114,8 @@ journalctl -u qr_script_a --since today --no-pager          # actividad de HOY (
 journalctl -u qr_script_a --since today --no-pager | grep -iE "error|fail|exception|warning"   # fallos de hoy
 ```
 Si hay dos entradas/lectores, repite con `qr_script_b`. En la traza verás la
-lectura del QR, la validación contra el backend y el accionamiento del relé.
+lectura del QR, la validación contra el backend y el accionamiento del relé. Para
+contrastar con el servidor, entra al backend con `INFRASTRUCTURE_SSH_PASSWORD`.
 
 ## 6. Problema: el dispositivo aparece «sin conexión» en el frontend
 
