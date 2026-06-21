@@ -1,138 +1,161 @@
-# AGENTS.md — Depurar dispositivos ODROID (turnstile_controller)
+# AGENTS.md — Servicio técnico de dispositivos (turnstile_controller)
 
-Guía breve para un agente (Claude Code / Codex) que tiene que diagnosticar un
-dispositivo en una instalación. Cada gimnasio tiene una **puerta/torno** (lee el
-QR y abre) y, si hay vídeo, una **cámara**. Todos los servicios son units de
-`systemd` y el código vive en `~/turnstile_controller`.
+Guía para un agente (Claude Code / Codex) que hace de **soporte técnico** de las
+instalaciones: alguien reporta algo en lenguaje humano («la puerta de Barbate no
+abre de noche», «la cámara de Emilio en Guadix va lenta») y tú tienes que
+averiguar **de qué gimnasio y de qué dispositivo** se trata, conectarte y
+diagnosticar.
 
-## ⚡ Lo PRIMERO de todo: carga las credenciales
+Cada gimnasio tiene una **puerta/torno** (lee el QR y abre) y, a veces, una
+**cámara**. Los servicios son units de `systemd`; el código vive en
+`~/turnstile_controller`.
 
-Antes de conectar a nada, carga el fichero **`.env.agents`** (en la raíz del
-repo, **gitignored**) para tener las contraseñas como variables de entorno:
+## ⛔ Regla de oro
+
+El primer encargo es **SIEMPRE solo diagnosticar y explicar qué pasa**. **No
+cambies, reinicies, reconfigures ni borres NADA sin preguntar antes.** Primero
+averiguas y resumes; si hay que actuar, lo propones y esperas el OK.
+
+## ⚡ Lo PRIMERO: carga las credenciales
 
 ```bash
 set -a; source .env.agents; set +a
 ```
+**No** `cat`/`grep`/`echo` ese fichero (gitignored) ni imprimas sus valores: solo
+súrcalo. Si no existe, créalo desde `.env.agents.example` con el fichero de
+contraseñas. Provee: `DEVICE_SSH_*` (dispositivos), `INFRASTRUCTURE_SSH_PASSWORD`
++ `BACKEND_SSH`/`FRONTEND_SSH`/`FRP_JUMPHOST_SSH` (servidores) y `POSTGRES_DB_*`
+(base de datos de producción).
 
-**No** abras, `cat`, `grep` ni imprimas ese fichero ni sus valores — solo
-súrcalo y usa las variables. Si **no existe**, créalo copiando
-`.env.agents.example` y rellenándolo con el fichero de contraseñas (o pídele los
-valores al usuario). Variables que provee:
+## 1. Identifica el gimnasio y el dispositivo (EMPIEZA AQUÍ)
 
-- `DEVICE_SSH_PASSWORD` — contraseña de los ODROID/Raspberry (puertas, tornos,
-  cámaras). **Es la que necesitas casi siempre.** Acompañada de `DEVICE_SSH_USER`
-  (`manager`; algún ODROID usa `root`) y `DEVICE_SSH_HOST` (el relay FRP).
-- `INFRASTRUCTURE_SSH_PASSWORD` + `BACKEND_SSH` / `FRONTEND_SSH` /
-  `FRP_JUMPHOST_SSH` — solo si hay que depurar el turnstile **junto con el
-  backend o el frontend** (mirar logs del servidor, etc.).
+Antes de mirar ningún log tienes que saber **qué gimnasio** y **qué dispositivo**.
+La fuente de la verdad es la **base de datos de producción** (acceso de lectura con
+`POSTGRES_DB_*`). Los dispositivos viven en **DOS tablas — mira siempre las dos**:
 
-## 1. Conectarse por SSH
+- La tabla de **dispositivos ODROID** (sistema nuevo): trae los datos de **SSH** y
+  el mapeo a la entrada y al gimnasio.
+- La tabla de dispositivos **legacy** (Raspberry Pi y algún ODROID viejo): su
+  nombre lleva **descripción con dueño y lugar** (p.ej. «torno de Emilio en
+  Guadix»), un comando SSH ya montado, y su estado online/última conexión.
 
-1. El comando SSH exacto (con su **puerto**) está en el **frontend**: **Control
-   de Acceso → Dispositivos → uncollapse → «SSH remoto»**. Cada dispositivo tiene
-   su puerto; el host es `$DEVICE_SSH_HOST` y el usuario `manager`.
-2. `ssh` normal se queda esperando la contraseña y **el agente no puede
-   teclearla**. Pásala con `sshpass` usando la variable ya cargada:
-   ```bash
-   sshpass -p "$DEVICE_SSH_PASSWORD" ssh -o StrictHostKeyChecking=no \
-     -p 6020 "$DEVICE_SSH_USER@$DEVICE_SSH_HOST" 'cd ~/turnstile_controller && <comando>'
-   ```
-   Si falta `sshpass`: `sudo apt-get install -y sshpass` (o en mac
-   `brew install hudochenkov/sshpass/sshpass`); alternativa: un script con `paramiko`.
-3. Para `sudo` en el dispositivo (reiniciar un servicio) usa la misma contraseña
-   por stdin:
-   ```bash
-   sshpass -p "$DEVICE_SSH_PASSWORD" ssh -p 6020 "$DEVICE_SSH_USER@$DEVICE_SSH_HOST" \
-     "echo \"$DEVICE_SSH_PASSWORD\" | sudo -S systemctl restart mqtt-sender"
-   ```
-4. Para entrar a un **servidor** (backend / frontend / FRP) en lugar de a un
-   dispositivo, usa `INFRASTRUCTURE_SSH_PASSWORD` con el destino correspondiente:
-   ```bash
-   sshpass -p "$INFRASTRUCTURE_SSH_PASSWORD" ssh -o StrictHostKeyChecking=no "$BACKEND_SSH" '<comando>'
-   ```
-5. La config del dispositivo (broker MQTT, cámara, relé, S3…) está en
-   `~/turnstile_controller/.env`.
+Traduce las palabras del reporte:
+- «puerta» / «torno» / «cámara» → tipo de entrada/dispositivo.
+- El **lugar** (Barbate, Guadix, Baza…) → ciudad o nombre del gimnasio.
+- El **dueño** (Emilio, Hassane, Jose…) → casi siempre en la tabla legacy.
 
-## 2. Ver logs
+**Las consultas SQL exactas (conexión + esquema + joins) están en
+`AGENTS.queries.md`** (fichero **local y gitignored**, fuera del repo público).
+Léelo y úsalo. Si no existe en este entorno, **introspecciona el esquema** tú
+mismo (`\dt`, `\d <tabla>`) con el acceso de `POSTGRES_DB_*` y reconstruye las
+consultas; o pídeselo al usuario.
+
+**Si NO estás seguro, PREGUNTA con un selector.** Si el lugar/dueño no aparece,
+sale en varios gimnasios, o es ambiguo («Emilio», «Hassan», «Cele»…), **no
+adivines**: presenta las coincidencias (gimnasio + ciudad) y deja que el operador
+elija. Si no hay ninguna, dilo y pide más datos (¿ciudad?, ¿nombre del gimnasio o
+del dueño?).
+
+## 2. Conéctate por SSH
+
+`ssh` normal se queda esperando la contraseña y **el agente no puede teclearla**.
+Usa `sshpass` con las variables cargadas:
+```bash
+sshpass -p "$DEVICE_SSH_PASSWORD" ssh -o StrictHostKeyChecking=no \
+  -p 6008 "$DEVICE_SSH_USER@$DEVICE_SSH_HOST" 'cd ~/turnstile_controller && <comando>'
+```
+- Falta `sshpass` → `sudo apt-get install -y sshpass` (o `paramiko`).
+- `sudo` en el dispositivo (mismo password):
+  `... ssh ... "echo \"$DEVICE_SSH_PASSWORD\" | sudo -S systemctl restart <servicio>"`.
+- Para un **servidor** (backend/frontend/FRP): `sshpass -p "$INFRASTRUCTURE_SSH_PASSWORD" ssh "$BACKEND_SSH" '<cmd>'`.
+- Config del dispositivo (broker, cámara, relé…): `~/turnstile_controller/.env`.
+
+## 3. Ver logs
 
 ```bash
-journalctl -u <servicio> -n 80 --no-pager      # últimas 80 líneas
-journalctl -u <servicio> -f                     # en vivo (seguir)
-journalctl -u <servicio> --since "10 min ago"   # ventana de tiempo
-systemctl status <servicio>                      # ¿activo / fallido?
+journalctl -u <servicio> -n 80 --no-pager        # últimas líneas
+journalctl -u <servicio> --since "today"          # de hoy
+journalctl -u <servicio> --since "7 days ago"     # ventana
+systemctl is-active <servicio>                     # ¿activo?
 ```
 
-## 3. Mapa de servicios
+## 4. Mapa de servicios
 
 | Dónde | Servicio | Para qué |
 |-------|----------|----------|
-| Puerta/torno | `qr_script_a` (y `qr_script_b` si hay 2 lectores) | lee el QR, valida y acciona el relé (abre) |
-| Puerta/torno | `mqtt-sender` | al leer un QR, avisa a la cámara por MQTT para que grabe |
+| Puerta/torno | `qr_script_a` (y `qr_script_b` si hay 2 lectores) | lee el QR, valida y abre (relé) |
+| Puerta/torno | `mqtt-sender` | avisa a la cámara por MQTT para que grabe |
 | Cámara | `mosquitto` | broker MQTT (recibe el aviso) |
 | Cámara | `mqtt-receiver` | recibe el aviso y deja la señal de grabación |
-| Cámara | `videorecorder` | graba ~6 s de vídeo |
+| Cámara | `videorecorder` | graba ~6 s |
 | Cámara | `upload` | sube el `.mp4` a S3 |
-| Ambos | `device_configurator` | heartbeat + comandos del backend (config, reboot) |
-| Ambos | `frpc` | túnel al relay (lo que da el «SSH remoto» y el online/offline) |
+| Ambos | `device_configurator` | heartbeat + comandos del backend |
+| Ambos | `frpc` | túnel al relay (da el «SSH remoto» y el online/offline) |
 
-## 4. Problema: la cámara NO graba (vídeo)
+## 5. Caso: la PUERTA / contar entradas / fallos del día
 
-El flujo cruza **dos** dispositivos, así que necesitas SSH **a la cámara** y, a
-ser posible, **también al dispositivo disparador** (puerta/torno). Cadena completa:
+`qr_script_a` (y `qr_script_b` si hay 2 lectores) loguea cada lectura con un
+`response_code`. Diagnóstico típico («no abre / no pueden entrar»):
+1. **¿Funciona la puerta?** `systemctl is-active qr_script_a` + busca líneas
+   `Opening door` / `Hola, <nombre>!` recientes (abre para socios válidos).
+2. **¿Lector QR conectado?** que `qr_script_a` esté logueando lecturas.
+3. **¿Desconexiones?** `journalctl -u frpc` / `device_configurator`.
+4. **¿Internet?** suele ser **inofensivo**: la validación es local; la puerta
+   sigue abriendo aunque el túnel parpadee.
+5. **Causa raíz frecuente = NO es avería, es el horario del socio.** El
+   `response_code` distingue: socio OK, **fuera de horario** («Fuera de horario»),
+   socio sin pagar, QR que no es de ningún socio, QR caducado. Para **contar los
+   rechazos y nombrar a los clientes afectados**, usa la consulta de
+   `AGENTS.queries.md` (une el log de entradas con la tabla de clientes). Resume:
+   «la puerta funciona; estos socios intentan entrar fuera de su horario: <nombres
+   + nº de veces>».
 
-1. Disparador · `qr_script_a` lee el QR y deja un fichero de disparo en `RECORDING_DIR`.
-2. Disparador · `mqtt-sender` ve el fichero y publica `[uuid, ts]` al broker de la cámara (`MQTT_BROKER` en `.env` = IP LAN de la cámara).
-3. Cámara · `mosquitto` recibe el mensaje.
-4. Cámara · `mqtt-receiver` escribe `record.txt` + `<uuid>.txt`.
-5. Cámara · `videorecorder` graba y guarda `<uuid>.mp4`.
-6. Cámara · `upload` lo sube a S3.
+## 6. Caso: la CÁMARA no graba (o graba tarde)
 
-Qué revisar:
+El flujo cruza **dos** dispositivos → SSH a **la cámara** y al **disparador**.
+Cadena: `qr_script_a` deja un fichero → `mqtt-sender` publica a `MQTT_BROKER` (IP de
+la cámara) → `mosquitto` → `mqtt-receiver` escribe `record.txt` → `videorecorder`
+graba → `upload` sube a S3.
 ```bash
-# En el disparador (puerta/torno):
+# Disparador:
 journalctl -u qr_script_a -n 50 --no-pager           # ¿leyó el QR?
 journalctl -u mqtt-sender -n 50 --no-pager           # ¿"Found trigger file" + "Sent payload"? ¿a qué broker?
-grep MQTT_BROKER ~/turnstile_controller/.env          # ¿apunta a la IP correcta de la cámara?
-
-# En la cámara:
-journalctl -u mosquitto    -n 50 --no-pager
+grep MQTT_BROKER ~/turnstile_controller/.env          # ¿IP correcta de la cámara?
+# Cámara:
 journalctl -u mqtt-receiver -n 50 --no-pager          # ¿"Received data for UUID"?
-journalctl -u videorecorder -n 50 --no-pager          # ¿"Started recording"? ¿errores de cámara?
-journalctl -u upload       -n 50 --no-pager           # ¿subió a S3?
+journalctl -u videorecorder -n 50 --no-pager          # ¿"Started recording"? ¿errores?
+journalctl -u upload -n 50 --no-pager                 # ¿subió a S3?
 ```
-Pistas: `mqtt-sender` envía pero `mqtt-receiver` no recibe → `MQTT_BROKER`
-incorrecto (la IP de la cámara cambió) o WiFi inestable. Graba pero no aparece en
-el panel → mira `upload`. `videorecorder` con errores de apertura → cámara USB.
+- «Reacciona tarde / el cliente ya pasó» → latencia. Los ODROID actuales usan
+  `inotify` (despiertan en ~1 ms); comprueba si la cámara tiene el código nuevo
+  (`grep -c DirectoryWatcher mqtt_sender.py`) y si el WiFi reconecta el MQTT en
+  cada disparo.
+- Envía pero no recibe → `MQTT_BROKER` mal (la IP de la cámara cambió) o WiFi.
 
-## 5. Problema: la puerta (no abre, o revisar entradas/fallos del día)
+## 7. Caso: «sin conexión» en el frontend
 
-Todo está en el lector de QR del disparador, `qr_script_a` (y `qr_script_b` si
-hay dos lectores):
+Casi siempre es el túnel/heartbeat, no la puerta/cámara (son locales):
 ```bash
-journalctl -u qr_script_a -n 80 --no-pager                  # últimas lecturas
-journalctl -u qr_script_a --since today --no-pager          # actividad de HOY (entradas)
-journalctl -u qr_script_a --since today --no-pager | grep -iE "error|fail|exception|warning"   # fallos de hoy
+journalctl -u frpc -n 50 --no-pager                  # túnel (si parpadea = WiFi inestable)
+journalctl -u device_configurator -n 80 --no-pager
 ```
-Si hay dos entradas/lectores, repite con `qr_script_b`. En la traza verás la
-lectura del QR, la validación contra el backend y el accionamiento del relé. Para
-contrastar con el servidor, entra al backend con `INFRASTRUCTURE_SSH_PASSWORD`.
+Un `reboot` suele restablecer un túnel que parpadea.
 
-## 6. Problema: el dispositivo aparece «sin conexión» en el frontend
+## 8. Dispositivos LEGACY (Raspberry Pi)
 
-Casi siempre es el túnel o el heartbeat, no la puerta/cámara (que son locales y
-siguen funcionando):
-```bash
-journalctl -u frpc -n 50 --no-pager                  # túnel al relay (si parpadea = WiFi inestable)
-journalctl -u device_configurator -n 80 --no-pager   # heartbeat / comandos del backend
-```
-Un `reboot` suele restablecer un túnel que está parpadeando.
+Su estado online/offline sale en la tabla legacy (ver §1 / `AGENTS.queries.md`).
+Si está **offline**:
+- En **puertas/tornos** suele ser que **el dueño lo apagó** (poco grave).
+- En **cámaras** suele ser que **se ha caído**: el sistema legacy es inestable.
+- Si la **Raspberry Pi está realmente rota**: es **legacy, no le damos soporte ni
+  cambiamos piezas** (nadie sabe, está obsoleto). Hay que **convencer al dueño de
+  cambiar de Raspberry Pi a ODROID** (el sistema nuevo). Señálalo en el diagnóstico.
 
 ## Notas
 
 - `mqtt-sender` y `videorecorder` ya **no hacen polling**: usan `inotify`
-  (`inotify_watch.py`) y despiertan en ~1 ms cuando aparece el fichero de
-  disparo. Si `inotify` fallara, caen automáticamente al polling anterior. No
-  hace falta instalar nada (solo stdlib + libc).
-- Los dispositivos hacen `git pull` **manual** desde `municio1925/turnstile_controller`
-  (rama `odroid`). No hay auto-pull: para desplegar hay que entrar por SSH y
-  hacer `git pull` + `sudo systemctl restart <servicio>`.
+  (`inotify_watch.py`), despiertan en ~1 ms. Fallback automático al polling. Sin
+  dependencias (solo stdlib + libc).
+- Deploy de código: `git pull` **manual** desde `municio1925/turnstile_controller`
+  (rama `odroid`) + `sudo systemctl restart <servicio>`. No hay auto-pull.
+- Recuerda la **regla de oro**: diagnostica y resume; no toques nada sin preguntar.
