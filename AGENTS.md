@@ -156,7 +156,26 @@ journalctl -u upload -n 50 --no-pager                 # ¿subió a S3?
   `inotify` (despiertan en ~1 ms); comprueba si la cámara tiene el código nuevo
   (`grep -c DirectoryWatcher mqtt_sender.py`) y si el WiFi reconecta el MQTT en
   cada disparo.
-- Envía pero no recibe → `MQTT_BROKER` mal (la IP de la cámara cambió) o WiFi.
+- Envía pero no recibe → `MQTT_BROKER` mal (la IP de la cámara cambió), WiFi, o el
+  **broker de la cámara no acepta LAN**: en la cámara `mosquitto` debe escuchar en
+  `0.0.0.0:1883` (con `lan-listener.conf` en `/etc/mosquitto/conf.d/`); si solo
+  escucha en `127.0.0.1`, el disparador no puede publicarle.
+
+**OJO — una cámara SIEMPRE figura como «sin vincular» (unpaired) en el frontend; es
+NORMAL, no es avería.** Una cámara no tiene entrada propia (graba la entrada del
+disparador), así que nunca recibe el estado «vinculado»; el enlace real vive en el
+**disparador** (torno/puerta), que tiene la cámara asignada y su `MQTT_BROKER`
+apuntando a la IP de la cámara. No te fíes del estado «vinculado/sin vincular»:
+confirma con una **prueba de extremo a extremo** — deja un disparo en el disparador
+y comprueba que la cámara graba:
+```bash
+# en el DISPARADOR (torno/puerta). RECORDING_DIR sale del .env (p.ej. ~/turnstile_controller/camera):
+U=$(python3 -c "import uuid;print(uuid.uuid4())"); touch "$RECORDING_DIR/$U.txt"
+# en la CÁMARA: ¿recibió y grabó?
+journalctl -u mqtt-receiver --since "30 sec ago" --no-pager | grep "$U"   # -> "Received data for UUID"
+ls -la "$RECORDING_DIR/$U.mp4"                                            # -> debe existir un .mp4
+```
+(Borra luego el `.mp4` de prueba: el servicio `upload` lo subiría a S3 como basura.)
 
 ## 7. Caso: «sin conexión» en el frontend
 
