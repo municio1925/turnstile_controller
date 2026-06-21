@@ -44,6 +44,19 @@ Traduce las palabras del reporte:
 - El **lugar** (Barbate, Guadix, Baza…) → ciudad o nombre del gimnasio.
 - El **dueño** (Emilio, Hassane, Jose…) → casi siempre en la tabla legacy.
 
+**Avisos al identificar (lecciones reales):**
+- Un gimnasio puede tener **varias entradas**: «Puerta» y «Torno» son
+  dispositivos distintos. No asumas que «puerta» es literal — revisa **todas** las
+  entradas (a veces el problema está en el torno aunque digan «la puerta»).
+- Un mismo aparato puede estar en **las dos tablas**: si la fila ODROID trae el
+  SSH vacío, busca su SSH en la tabla legacy por el lugar (puede ser el mismo
+  equipo en transición; algunos legacy entran con usuario **root**, no `manager`).
+- «Online» = **heartbeat reciente**. Un estado/última-conexión viejo (p.ej.
+  >15–30 min) trátalo como **caído** aunque el flag diga «SUCCESS/online».
+- «Cámara» a veces **no es un equipo aparte** sino el vídeo de una entrada. Si no
+  encuentras dispositivo-cámara, mira si la entrada tiene el **vídeo activado**
+  antes de concluir que «no existe».
+
 **Las consultas SQL exactas (conexión + esquema + joins) están en
 `AGENTS.queries.md`** (fichero **local y gitignored**, fuera del repo público).
 Léelo y úsalo. Si no existe en este entorno, **introspecciona el esquema** tú
@@ -109,6 +122,11 @@ systemctl is-active <servicio>                     # ¿activo?
    `AGENTS.queries.md` (une el log de entradas con la tabla de clientes). Resume:
    «la puerta funciona; estos socios intentan entrar fuera de su horario: <nombres
    + nº de veces>».
+   **OJO:** los rechazos por horario **no salen fiables en el `journalctl` del
+   dispositivo** (ahí ves sobre todo aperturas/`UserExists`); el conteo y los
+   nombres se sacan de la **BD**. Y las horas de la BD están en **UTC** →
+   conviértelas a hora local (España = **UTC+2** en verano) antes de hablar de
+   «noche/madrugada».
 
 ## 6. Caso: la CÁMARA no graba (o graba tarde)
 
