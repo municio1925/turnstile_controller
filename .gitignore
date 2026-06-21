@@ -123,6 +123,7 @@ celerybeat.pid
 .env
 .env.agents
 AGENTS.queries.md
+AGENTS.update.md
 .venv
 env/
 venv/

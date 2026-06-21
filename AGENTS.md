@@ -227,4 +227,8 @@ Si está **offline**:
   dependencias (solo stdlib + libc).
 - Deploy de código: `git pull` **manual** desde `municio1925/turnstile_controller`
   (rama `odroid`) + `sudo systemctl restart <servicio>`. No hay auto-pull.
+- **Actualizar/migrar los ODROID de un gimnasio** (pasar a municio, traer el último
+  código, completar sudoers, reiniciar servicios sin tirar la puerta, casos
+  especiales root/Pi, estado por gym — Galaxy pendiente/offline): ver
+  `AGENTS.update.md` (fichero local, gitignored, fuera del repo público).
 - Recuerda la **regla de oro**: diagnostica y resume; no toques nada sin preguntar.
