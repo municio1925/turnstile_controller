@@ -10,6 +10,11 @@ StandardOutput=journal
 StandardError=journal
 Restart=on-failure
 RestartSec=10s
+# Kernel-level backstop: kill any run that exceeds this so the unit can never stay
+# "active (running)" forever and block the 5-min timer (the script's own watchdog
+# self-exits earlier at DOWNLOAD_RUN_DEADLINE=180s; this guards the pathological case).
+RuntimeMaxSec=240
+TimeoutStopSec=20
 
 [Install]
 WantedBy=multi-user.target

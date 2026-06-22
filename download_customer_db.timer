@@ -1,5 +1,5 @@
 [Unit]
-Description=Run Download Customer Database Service every 15 minutes and on startup
+Description=Run Download Customer Database Service every 5 minutes and on startup
 
 [Timer]
 OnBootSec=0s
