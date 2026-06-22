@@ -7,7 +7,7 @@ import re
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import evdev
@@ -465,7 +465,9 @@ def load_customers_cache():
 def post_request(url, headers, payload, retries=10, sleep_duration=10):
     for i in range(retries):
         try:
-            response = requests.post(url, headers=headers, json=payload)
+            # (connect, read) timeout: the door now leans on this live check for
+            # expired-in-cache members, so a wedged server must never hang the turnstile.
+            response = requests.post(url, headers=headers, json=payload, timeout=(5, 15))
             return response
         except requests.exceptions.RequestException as e:
             logger.warning(f"Eerror: {e}. Retrying...")
@@ -625,11 +627,34 @@ async def get_valid_response(url, headers, payload, customer_uuid, entrance_log_
     return response
 
 
+def _membership_currently_valid(customer):
+    """Whether the customer's membership covers 'now' in Europe/Madrid.
+
+    Prefers the absolute expiry date ``membership_valid_until`` (sent by the
+    server's v2 customers endpoint) so a stale cache fails *closed*: once that
+    date has passed, this returns False and the caller defers to the live server
+    check instead of trusting a frozen ``active_membership`` flag (the flag is
+    computed server-side at download time and silently rots if the cache stops
+    refreshing). Falls back to ``active_membership`` for old (v1) caches or
+    customers with no membership date (e.g. staff/comped). The odroid runs UTC,
+    so we compare against the Madrid date, matching the schedule check."""
+    valid_until = customer.get("membership_valid_until")
+    if not valid_until:
+        return bool(customer.get("active_membership"))
+    try:
+        valid_until_date = date.fromisoformat(valid_until)
+    except (TypeError, ValueError):
+        logger.warning(f"Invalid membership_valid_until {valid_until!r}; falling back to active_membership.")
+        return bool(customer.get("active_membership"))
+    today_madrid = datetime.now(SCHEDULE_TIMEZONE).date()
+    return today_madrid <= valid_until_date
+
+
 def _find_customer_in_cache(customer_uuid):
     customers = load_customers_cache()
     customer = customers.get(customer_uuid, None)
     if customer:
-        if customer["active_membership"] or customer["is_staff"]:
+        if _membership_currently_valid(customer) or customer["is_staff"]:
             logger.info(f"Found customer {customer_uuid} in cache.")
             if customer.get("entrance_schedules"):
                 if not is_in_schedule(customer):
