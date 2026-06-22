@@ -235,3 +235,100 @@ def test_find_customer_in_customers_json_outside_schedule(tmp_path, monkeypatch)
 
     assert status_code == "OutsideSchedule"
     assert customer is None
+
+
+# --- membership_valid_until (v2 cache): the door evaluates expiry locally ---
+
+MEMBERSHIP_CUSTOMER_UUID = "adc89821-c4a8-4b83-8699-45a93c14ffda"
+
+
+def membership_customer(**overrides):
+    """A customer with no schedule restriction so only the membership gate applies."""
+    customer = {
+        "id": 5500,
+        "customer_uuid": MEMBERSHIP_CUSTOMER_UUID,
+        "first_name": "Felisia",
+        "last_name": "Pertegal valle",
+        "is_staff": False,
+        "card_number": None,
+        "second_card_number": None,
+        "active_membership": True,
+        "entrance_schedules": [],
+    }
+    customer.update(overrides)
+    return customer
+
+
+@patch("qr.load_customers_cache")
+def test_stale_true_flag_but_expired_date_does_not_open(mock_load_customers_cache):
+    """The Felisia bug: a frozen active_membership=True must NOT open the door once
+    membership_valid_until has passed -> returns MembershipInactive so the caller
+    falls back to the live server check instead of trusting the stale flag."""
+    mock_load_customers_cache.return_value = {
+        MEMBERSHIP_CUSTOMER_UUID: membership_customer(
+            active_membership=True, membership_valid_until="2026-06-17"
+        )
+    }
+    with freeze_time("2026-06-22 10:00:00+00:00"):
+        status_code, customer = _find_customer_in_cache(MEMBERSHIP_CUSTOMER_UUID)
+    assert status_code == "MembershipInactive"
+    assert customer is None
+
+
+@patch("qr.load_customers_cache")
+def test_future_valid_until_opens(mock_load_customers_cache):
+    mock_load_customers_cache.return_value = {
+        MEMBERSHIP_CUSTOMER_UUID: membership_customer(
+            active_membership=False, membership_valid_until="2026-12-31"
+        )
+    }
+    with freeze_time("2026-06-22 10:00:00+00:00"):
+        status_code, customer = _find_customer_in_cache(MEMBERSHIP_CUSTOMER_UUID)
+    assert status_code == "UserExists"
+
+
+@patch("qr.load_customers_cache")
+def test_valid_until_is_inclusive_of_last_day(mock_load_customers_cache):
+    mock_load_customers_cache.return_value = {
+        MEMBERSHIP_CUSTOMER_UUID: membership_customer(membership_valid_until="2026-06-17")
+    }
+    with freeze_time("2026-06-17 09:00:00+00:00"):  # 11:00 Madrid, same day
+        status_code, _ = _find_customer_in_cache(MEMBERSHIP_CUSTOMER_UUID)
+    assert status_code == "UserExists"
+
+
+@patch("qr.load_customers_cache")
+def test_valid_until_uses_madrid_date_not_utc(mock_load_customers_cache):
+    """23:30 UTC on the last paid day is already the next day in Madrid (UTC+2),
+    so the membership is over -> the device must use the Madrid date."""
+    mock_load_customers_cache.return_value = {
+        MEMBERSHIP_CUSTOMER_UUID: membership_customer(membership_valid_until="2026-06-17")
+    }
+    with freeze_time("2026-06-17 23:30:00+00:00"):  # 01:30 Madrid on 2026-06-18
+        status_code, _ = _find_customer_in_cache(MEMBERSHIP_CUSTOMER_UUID)
+    assert status_code == "MembershipInactive"
+
+
+@patch("qr.load_customers_cache")
+def test_staff_opens_even_when_membership_expired(mock_load_customers_cache):
+    mock_load_customers_cache.return_value = {
+        MEMBERSHIP_CUSTOMER_UUID: membership_customer(
+            is_staff=True, active_membership=False, membership_valid_until="2026-06-17"
+        )
+    }
+    with freeze_time("2026-06-22 10:00:00+00:00"):
+        status_code, _ = _find_customer_in_cache(MEMBERSHIP_CUSTOMER_UUID)
+    assert status_code == "UserExists"
+
+
+@pytest.mark.parametrize("active, expected", [(True, "UserExists"), (False, "MembershipInactive")])
+@patch("qr.load_customers_cache")
+def test_v1_cache_without_valid_until_falls_back_to_flag(mock_load_customers_cache, active, expected):
+    """Backwards compatibility: an old cache with no membership_valid_until still
+    works off the active_membership boolean."""
+    customer = membership_customer(active_membership=active)
+    customer.pop("membership_valid_until", None)
+    mock_load_customers_cache.return_value = {MEMBERSHIP_CUSTOMER_UUID: customer}
+    with freeze_time("2026-06-22 10:00:00+00:00"):
+        status_code, _ = _find_customer_in_cache(MEMBERSHIP_CUSTOMER_UUID)
+    assert status_code == expected

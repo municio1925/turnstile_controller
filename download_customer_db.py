@@ -93,13 +93,23 @@ def get_customers():
         logging.error("Could not get authentication token.")
         return None
 
-    url = f"{HOSTNAME}/customers/"
     headers = {
         "Content-Type": "application/json",
         "Authorization": authorization,
     }
 
-    response = make_request("GET", url, headers=headers)
+    # Prefer v2 (adds membership_valid_until so the door can judge expiry against
+    # its own clock); fall back to v1 if the server doesn't expose v2 yet.
+    response = None
+    for path in ("v2/customers", "customers"):
+        url = f"{HOSTNAME}/{path}/"
+        response = make_request("GET", url, headers=headers)
+        if response is not None and response.status_code == 200:
+            break
+        if response is not None and response.status_code == 404:
+            logging.warning(f"{url} unavailable (404); falling back to the previous endpoint.")
+            continue
+        break  # network error or other status: don't mask it by trying the fallback
     if response is None or response.status_code != 200:
         log_unsuccessful_request(response)
         return None
