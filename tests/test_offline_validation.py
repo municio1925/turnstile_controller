@@ -321,6 +321,20 @@ def test_staff_opens_even_when_membership_expired(mock_load_customers_cache):
     assert status_code == "UserExists"
 
 
+@patch("qr.load_customers_cache")
+def test_v2_cache_without_active_membership_flag_uses_date(mock_load_customers_cache):
+    """v2 caches no longer persist active_membership; the date alone must decide."""
+    valid = membership_customer(membership_valid_until="2040-06-22")
+    valid.pop("active_membership", None)
+    expired = membership_customer(membership_valid_until="2026-06-22")
+    expired.pop("active_membership", None)
+    with freeze_time("2026-06-23 10:00:00+00:00"):
+        mock_load_customers_cache.return_value = {MEMBERSHIP_CUSTOMER_UUID: valid}
+        assert _find_customer_in_cache(MEMBERSHIP_CUSTOMER_UUID)[0] == "UserExists"
+        mock_load_customers_cache.return_value = {MEMBERSHIP_CUSTOMER_UUID: expired}
+        assert _find_customer_in_cache(MEMBERSHIP_CUSTOMER_UUID)[0] == "MembershipInactive"
+
+
 @pytest.mark.parametrize("active, expected", [(True, "UserExists"), (False, "MembershipInactive")])
 @patch("qr.load_customers_cache")
 def test_v1_cache_without_valid_until_falls_back_to_flag(mock_load_customers_cache, active, expected):

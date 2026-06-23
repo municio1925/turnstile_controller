@@ -115,6 +115,14 @@ def get_customers():
         return None
 
     customers = response.json()
+    for customer in customers:
+        # The door judges membership from membership_valid_until against its own
+        # clock, so don't persist the redundant active_membership boolean: it is
+        # just (paid_until >= today) frozen at download time and goes stale, which
+        # would contradict the date in a cache that stops refreshing. Keep it only
+        # for a v1 response (no date present) where qr.py still needs it.
+        if "membership_valid_until" in customer:
+            customer.pop("active_membership", None)
     customer_uuid_dict = {customer["customer_uuid"]: customer for customer in customers}
     card_number_dict = {
         customer["card_number"]: customer for customer in customers if customer.get("card_number")
