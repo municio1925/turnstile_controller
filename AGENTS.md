@@ -220,6 +220,46 @@ Si está **offline**:
   cambiamos piezas** (nadie sabe, está obsoleto). Hay que **convencer al dueño de
   cambiar de Raspberry Pi a ODROID** (el sistema nuevo). Señálalo en el diagnóstico.
 
+## 9. Desplegar un cambio en el BACKEND (producción)
+
+El backend es el proyecto Django **`fitnessmanager_api`**, que corre en el contenedor
+`fitnessmanager-web-1` del servidor de backend (entras con `BACKEND_SSH`; ver §1 /
+`AGENTS.queries.md`). El código **no** está horneado en la imagen: es un **bind-mount**
+del repo del host a `/app`, así que **editar el fichero en el host es editar producción
+en vivo**. Mira la ruta exacta con `docker inspect fitnessmanager-web-1` (es
+`~/fitnessmanager/fitnessmanager_api` del usuario de despliegue); el repo git está en
+`~/fitnessmanager`, rama **`master`**.
+
+- **Cómo recarga:** el servicio web corre `uvicorn … --reload`, así que **al guardar un
+  `.py` recarga solo** — sin reiniciar el contenedor, sin downtime. No hace falta
+  `docker restart`.
+- **Valida ANTES de fiarte de la recarga** (una recarga sobre código roto tumba la API):
+  ```bash
+  docker exec fitnessmanager-web-1 python manage.py check        # imports/urls OK
+  ```
+  Y una **prueba de humo** (p. ej. en `manage.py shell` con `APIRequestFactory` +
+  `force_authenticate`, o una petición HTTP autenticada) para confirmar la respuesta.
+  Haz **copia de los originales** antes de tocarlos para poder revertir al instante.
+- **Hazlo permanente: commit + push.** El cambio editado en vivo está **sin commitear**;
+  un `git checkout`/`pull` lo perdería. Hay que **commitear a `master`** (en
+  `~/fitnessmanager`) y **hacer `push` con la cuenta de GitHub del usuario** (la que
+  tengas asignada).
+- **OJO con el push (lo no obvio):** **el servidor de backend NO puede hacer push.** Su
+  `origin` apunta a `municio1925/fitnessmanager` por SSH con una *deploy key* **no
+  autorizada** (deniega lectura y escritura) y el host **no tiene credenciales de la
+  cuenta** de GitHub. Solución: **haz el push desde una máquina que sí tenga la cuenta
+  del usuario** (p. ej. la máquina de desarrollo, que ya hace push a
+  `municio1925/turnstile_controller`):
+  1. En el backend, empaqueta el commit: `git bundle create /tmp/x.bundle <sha_origin_master>..master`
+     (transfiérelo en **base64** si tu canal SSH corrompe el binario).
+  2. En tu máquina (con la cuenta del usuario), sobre un clon/checkout de
+     `municio1925/fitnessmanager`: `git fetch` ese bundle y
+     `git push origin <sha_del_commit>:refs/heads/master`.
+
+  Así el `master` del servidor y el de `origin` quedan en el **mismo SHA** (sin
+  divergencia). Alternativa de raíz: que autoricen la *deploy key* del servidor con
+  **escritura**, y entonces sí podrás `git push` directo desde el backend.
+
 ## Notas
 
 - `mqtt-sender` y `videorecorder` ya **no hacen polling**: usan `inotify`
