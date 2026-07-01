@@ -286,14 +286,25 @@ def get_ip_address():
 
 
 def current_wifi_ssid():
-    result = run_nmcli(["-t", "-f", "ACTIVE,SSID", "dev", "wifi"], require_sudo=True, fallback_to_unprivileged=False)
-    if result.returncode != 0:
+    # Read the SSID from the active Wi-Fi connection instead of the scan list.
+    # `nmcli dev wifi` reads the scan cache and triggers an implicit rescan once the
+    # cache is stale (>30s), which pulls the radio off-channel. Association state is
+    # known without any scan, so the heartbeat can report the current network cheaply.
+    connection_name = current_wifi_connection_name()
+    if not connection_name:
         return ""
 
-    for line in result.stdout.splitlines():
-        if line.startswith("yes:"):
-            return line.split(":", 1)[1].strip()
-    return ""
+    result = run_nmcli(
+        ["-g", "802-11-wireless.ssid", "connection", "show", connection_name],
+        require_sudo=True,
+        fallback_to_unprivileged=False,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+
+    # Fall back to the connection name (equals the SSID under NetworkManager's
+    # default naming) if the profile's SSID field could not be read.
+    return connection_name
 
 
 def current_wifi_connection_name():
@@ -552,7 +563,12 @@ def device_payload():
         "ip_address": get_ip_address(),
         "wifi_ssid": current_wifi_ssid(),
         "ethernet_connected": ethernet_connected(),
-        "wifi_networks": parse_wifi_scan(),
+        # Intentionally omit "wifi_networks" here: emitting it every heartbeat forced a
+        # `nmcli device wifi rescan` (~every 10s), knocking the radio off-channel and
+        # degrading connectivity. Omitting the key entirely (rather than sending []/None)
+        # lets the backend preserve the last cached scan. The neighbour list is refreshed
+        # on demand via the `wifi_scan` command (fired when the frontend Wi-Fi dialog opens
+        # and by "Actualizar redes").
         "configured_entrances": configured_entrances(),
         "ssh_tunnel": current_ssh_tunnel(),
         "device_settings": current_device_settings(),
