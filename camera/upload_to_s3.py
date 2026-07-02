@@ -196,12 +196,23 @@ class VideoUploader:
                 ContentLength=content_length,
             )
 
-        await asyncio.to_thread(upload_sync)
+        try:
+            await asyncio.to_thread(upload_sync)
+        except Exception:
+            # Upload failed: drop the pre-processed artifact so it is never
+            # re-ingested as a fresh recording on a later pass. That re-ingestion
+            # (an ffmpeg output that itself ends in ".mp4") is what produced the
+            # <name>.upload.mp4.upload.mp4... filename mangling. Keep the original
+            # recording so it can be retried cleanly.
+            if file_path_to_upload != file_path and os.path.exists(file_path_to_upload):
+                os.remove(file_path_to_upload)
+            raise
         logger.info(f"Successfully uploaded {file_name} to {bucket_name}/{s3_key}.")
 
         # Delete local files
-        os.remove(file_path)
-        if file_path_to_upload != file_path:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        if file_path_to_upload != file_path and os.path.exists(file_path_to_upload):
             os.remove(file_path_to_upload)
         logger.info(f"Deleted local file(s) related to {file_name}")
 
@@ -215,22 +226,42 @@ class VideoUploader:
             logger.info(f"Uploading {file}...")
             await self.upload_file_to_s3(s3_client, file)
             break  # better to not keep uploading because there might be a newer one with higher prio
+    @staticmethod
+    def _is_uploadable_recording(path):
+        """True only for a raw recording (<uuid>.mp4), never our own
+        pre-processing artifacts. Excluding the ffmpeg/flip outputs is what
+        stops them being re-ingested and mangled into
+        <name>.upload.mp4.upload.mp4..."""
+        name = os.path.basename(path)
+        if not name.endswith(".mp4") or "temp" in name:
+            return False
+        if name.endswith(".upload.mp4") or name.endswith(".flipped.mp4"):
+            return False
+        return True
+
     async def upload_loop(self):
         """Run the upload loop continuously."""
         while True:
+            try:
                 # List all files in the recording directory and sort them by modification time (newest first)
-            files = sorted(
-                [
-                    os.path.join(self.settings.RECORDING_DIR, f)
-                    for f in os.listdir(self.settings.RECORDING_DIR)
-                    if os.path.isfile(os.path.join(self.settings.RECORDING_DIR, f))
-                ],
-                key=lambda x: os.path.getmtime(x),
-                reverse=True
-            )
-            video_files = [f for f in files if f.endswith(".mp4") and not "temp" in f]
-            if video_files:
-                await self.upload(video_files)
+                files = sorted(
+                    [
+                        os.path.join(self.settings.RECORDING_DIR, f)
+                        for f in os.listdir(self.settings.RECORDING_DIR)
+                        if os.path.isfile(os.path.join(self.settings.RECORDING_DIR, f))
+                    ],
+                    key=lambda x: os.path.getmtime(x),
+                    reverse=True
+                )
+                video_files = [f for f in files if self._is_uploadable_recording(f)]
+                if video_files:
+                    await self.upload(video_files)
+            except Exception as exc:
+                # Never let a transient failure (e.g. an S3 outage) crash the
+                # process: a crash makes systemd restart us, and each restart
+                # re-runs ffmpeg on the leftover artifact, appending another
+                # ".upload.mp4" — that is the filename mangling + object bloat.
+                logger.error("Upload cycle failed, will retry: %s", exc)
             await asyncio.sleep(5)
 
 
