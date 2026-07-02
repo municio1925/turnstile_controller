@@ -27,6 +27,19 @@ contraseñas. Provee: `DEVICE_SSH_*` (dispositivos), `INFRASTRUCTURE_SSH_PASSWOR
 + `BACKEND_SSH`/`FRONTEND_SSH`/`FRP_JUMPHOST_SSH` (servidores) y `POSTGRES_DB_*`
 (base de datos de producción).
 
+## 🔗 Sistema multi-repo: lee SIEMPRE el AGENTS.md del backend
+
+`turnstile_controller` es solo el lado del **dispositivo**. El backend
+(`fitnessmanager`), el frontend (`SweatUI`) y la app móvil son el MISMO sistema.
+Antes de tocar, cambiar contratos (rutas/payloads) o **desplegar** cualquier cosa
+del backend, **lee primero el `AGENTS.md` propio del repo `fitnessmanager`** (raíz
+de `github.com/municio1925/fitnessmanager`; en el host de backend está en
+`~/fitnessmanager/AGENTS.md`, y ahí al lado viven la verdad del despliegue:
+`.github/workflows/deploy-production.yml` y `scripts/deploy-production.sh`). Es la
+fuente de la verdad del sistema completo. **No te fíes de los resúmenes de backend
+de ESTE fichero** (pueden quedar obsoletos — la §9 llegó a afirmar que producción
+recargaba en caliente, y era falso).
+
 ## 1. Identifica el gimnasio y el dispositivo (EMPIEZA AQUÍ)
 
 Antes de mirar ningún log tienes que saber **qué gimnasio** y **qué dispositivo**.
@@ -222,43 +235,38 @@ Si está **offline**:
 
 ## 9. Desplegar un cambio en el BACKEND (producción)
 
-El backend es el proyecto Django **`fitnessmanager_api`**, que corre en el contenedor
+El backend es el proyecto Django **`fitnessmanager_api`** (repo
+`municio1925/fitnessmanager`, rama **`master`**), en el contenedor
 `fitnessmanager-web-1` del servidor de backend (entras con `BACKEND_SSH`; ver §1 /
-`AGENTS.queries.md`). El código **no** está horneado en la imagen: es un **bind-mount**
-del repo del host a `/app`, así que **editar el fichero en el host es editar producción
-en vivo**. Mira la ruta exacta con `docker inspect fitnessmanager-web-1` (es
-`~/fitnessmanager/fitnessmanager_api` del usuario de despliegue); el repo git está en
-`~/fitnessmanager`, rama **`master`**.
+`AGENTS.queries.md`). **Lee primero el `AGENTS.md` propio de ese repo** (sección
+multi-repo de arriba); esto es solo un mapa rápido y no sustituye a la fuente.
 
-- **Cómo recarga:** el servicio web corre `uvicorn … --reload`, así que **al guardar un
-  `.py` recarga solo** — sin reiniciar el contenedor, sin downtime. No hace falta
-  `docker restart`.
-- **Valida ANTES de fiarte de la recarga** (una recarga sobre código roto tumba la API):
-  ```bash
-  docker exec fitnessmanager-web-1 python manage.py check        # imports/urls OK
-  ```
-  Y una **prueba de humo** (p. ej. en `manage.py shell` con `APIRequestFactory` +
-  `force_authenticate`, o una petición HTTP autenticada) para confirmar la respuesta.
-  Haz **copia de los originales** antes de tocarlos para poder revertir al instante.
-- **Hazlo permanente: commit + push.** El cambio editado en vivo está **sin commitear**;
-  un `git checkout`/`pull` lo perdería. Hay que **commitear a `master`** (en
-  `~/fitnessmanager`) y **hacer `push` con la cuenta de GitHub del usuario** (la que
-  tengas asignada).
-- **OJO con el push (lo no obvio):** **el servidor de backend NO puede hacer push.** Su
-  `origin` apunta a `municio1925/fitnessmanager` por SSH con una *deploy key* **no
-  autorizada** (deniega lectura y escritura) y el host **no tiene credenciales de la
-  cuenta** de GitHub. Solución: **haz el push desde una máquina que sí tenga la cuenta
-  del usuario** (p. ej. la máquina de desarrollo, que ya hace push a
-  `municio1925/turnstile_controller`):
-  1. En el backend, empaqueta el commit: `git bundle create /tmp/x.bundle <sha_origin_master>..master`
-     (transfiérelo en **base64** si tu canal SSH corrompe el binario).
-  2. En tu máquina (con la cuenta del usuario), sobre un clon/checkout de
-     `municio1925/fitnessmanager`: `git fetch` ese bundle y
-     `git push origin <sha_del_commit>:refs/heads/master`.
+**El despliegue es por CI, NO a mano.** Hacer **`push` a `master`** de
+`municio1925/fitnessmanager` dispara GitHub Actions
+(`.github/workflows/deploy-production.yml`), que entra por SSH al host, hace
+`merge --ff-only` de `master`, **reconstruye la imagen**
+(`docker compose -f docker-compose.yaml -f docker-compose.prod.yaml build
+--no-cache`), migra y recrea los contenedores (`down` + `up --force-recreate`).
+Tarda ~4-5 min y recrea el contenedor web (breve corte en el cambio). Vigílalo con
+`gh run watch --repo municio1925/fitnessmanager`.
 
-  Así el `master` del servidor y el de `origin` quedan en el **mismo SHA** (sin
-  divergencia). Alternativa de raíz: que autoricen la *deploy key* del servidor con
-  **escritura**, y entonces sí podrás `git push` directo desde el backend.
+- **NO edites el fichero en el host esperando recarga en caliente.** Producción
+  corre `docker-compose.prod.yaml`, que **NO** usa `uvicorn --reload` (eso es solo
+  el `docker-compose.yaml` de desarrollo local) y **hornea el código en la imagen**
+  al construir. Un edit en vivo en el host **no** llega al worker en marcha; como
+  mucho lo vería un `manage.py shell` nuevo, no el proceso que sirve peticiones.
+- **Flujo correcto:** edita en un clon local, `commit`, y **`push` a `master`**
+  desde una máquina con la cuenta con permiso de escritura (p. ej. la de
+  desarrollo, que ya empuja a `municio1925/turnstile_controller`). Deja que CI
+  despliegue; no toques el host a mano.
+- **El host NO puede hacer push** (su `origin` usa una *deploy key* de solo
+  lectura), por eso el push sale de tu máquina y **es CI quien lo lleva al host**.
+  Corolario: **deja el árbol de trabajo del host limpio** (== `origin/master`); si
+  dejas ediciones sin commitear o un commit local divergente, el deploy aborta
+  (comprueba `git diff --quiet`) o arrastra tu commit sin querer.
+- **Valida tras el deploy:** `docker exec fitnessmanager-web-1 python manage.py
+  check` + una prueba de humo autenticada (p. ej. `manage.py shell` con
+  `APIRequestFactory` + `force_authenticate`, o una petición HTTP real).
 
 ## Notas
 
