@@ -51,6 +51,12 @@ client = None
 client_lock = asyncio.Lock()
 
 def _mqtt_target():
+    # Re-read .env on every (re)connect so a broker change written by the
+    # configurator (e.g. the paired camera's LAN IP moved and MQTT_BROKER was
+    # rewritten) is honoured without restarting this service. The reconnect
+    # loop in send_with_reconnect then swings over to the new broker on its
+    # next attempt — no privileged `systemctl restart` needed.
+    load_dotenv(override=True)
     mqtt_broker = os.getenv("MQTT_BROKER")
     if not mqtt_broker:
         raise RuntimeError("MQTT_BROKER environment variable is not set.")

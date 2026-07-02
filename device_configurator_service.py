@@ -1302,9 +1302,11 @@ def reconcile_mqtt_broker(heartbeat_response):
 
     The backend resolves the paired camera's latest heartbeat IP and returns it
     as ``mqtt_broker`` in the heartbeat response. When the camera's DHCP lease
-    changes, that value changes with it; we rewrite ``.env`` and bounce only
-    ``mqtt-sender`` so the camera trigger reconnects. Deliberately lightweight
-    (no reboot, unlike ``env_update``) because a camera IP can change anytime.
+    changes, that value changes with it; we rewrite ``.env`` (an unprivileged
+    file write) and mqtt-sender re-reads it on its next reconnect. Deliberately
+    lightweight: no reboot (unlike ``env_update``) and no privileged service
+    restart — this service runs unprivileged (only ``nmcli`` is passwordless),
+    and mqtt-sender self-heals from the ``.env`` change on its own.
     """
     if not isinstance(heartbeat_response, dict):
         return
@@ -1321,16 +1323,10 @@ def reconcile_mqtt_broker(heartbeat_response):
         return
     persist_env_values({"MQTT_BROKER": new_broker})
     LOGGER.info(
-        "Camera broker moved %s -> %s; restarting mqtt-sender",
+        "Camera broker moved %s -> %s; mqtt-sender will reconnect to it",
         current_broker or "<unset>",
         new_broker,
     )
-    result = restart_managed_service("mqtt-sender")
-    if not result.get("ok"):
-        LOGGER.warning(
-            "mqtt-sender restart after broker change failed: %s",
-            result.get("stderr"),
-        )
 
 
 def fetch_next_command():
