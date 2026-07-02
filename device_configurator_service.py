@@ -28,6 +28,7 @@ MOSQUITTO_LAN_LISTENER_SOURCE_PATH = CURRENT_DIR / "mosquitto-lan-listener.conf"
 MOSQUITTO_LAN_LISTENER_TARGET_PATH = Path("/etc/mosquitto/conf.d/lan-listener.conf")
 WIFI_SCAN_SETTLE_SECONDS = float(os.getenv("DEVICE_WIFI_SCAN_SETTLE_SECONDS", "2"))
 INVALID_ENV_VALUES = {"", "none", "null", "undefined"}
+DEFAULT_LOCAL_MQTT_BROKER = "127.0.0.1"
 DEFAULT_SSH_USERNAME = os.getenv("FRP_SSH_USER", "manager")
 ACTIVE_CONTROL_API_BASE_URL = str(os.getenv("CONTROL_API_BASE_URL", "")).rstrip("/")
 ACTIVE_DEVICE_BOOTSTRAP_TOKEN = str(os.getenv("DEVICE_BOOTSTRAP_TOKEN", "")).strip()
@@ -1290,7 +1291,46 @@ def heartbeat():
     response = post_json("/device/bootstrap/heartbeat/", payload)
     mark_events_sent([event["event_uuid"] for event in payload.get("usb_events") or []])
     prune_events()
-    return response.json()
+    try:
+        return response.json()
+    except ValueError:
+        return {}
+
+
+def reconcile_mqtt_broker(heartbeat_response):
+    """Keep MQTT_BROKER pointed at the linked camera's current LAN IP.
+
+    The backend resolves the paired camera's latest heartbeat IP and returns it
+    as ``mqtt_broker`` in the heartbeat response. When the camera's DHCP lease
+    changes, that value changes with it; we rewrite ``.env`` and bounce only
+    ``mqtt-sender`` so the camera trigger reconnects. Deliberately lightweight
+    (no reboot, unlike ``env_update``) because a camera IP can change anytime.
+    """
+    if not isinstance(heartbeat_response, dict):
+        return
+    if not mqtt_camera_trigger_enabled():
+        return
+    new_broker = str(heartbeat_response.get("mqtt_broker") or "").strip()
+    # An empty value or the local fallback means the backend does not yet know
+    # the camera's IP (camera offline / just booted). Keep the last known-good
+    # broker rather than pointing the sender at localhost.
+    if not new_broker or new_broker == DEFAULT_LOCAL_MQTT_BROKER:
+        return
+    current_broker = str(os.getenv("MQTT_BROKER") or "").strip()
+    if new_broker == current_broker:
+        return
+    persist_env_values({"MQTT_BROKER": new_broker})
+    LOGGER.info(
+        "Camera broker moved %s -> %s; restarting mqtt-sender",
+        current_broker or "<unset>",
+        new_broker,
+    )
+    result = restart_managed_service("mqtt-sender")
+    if not result.get("ok"):
+        LOGGER.warning(
+            "mqtt-sender restart after broker change failed: %s",
+            result.get("stderr"),
+        )
 
 
 def fetch_next_command():
@@ -1308,7 +1348,8 @@ def main():
 
     while True:
         try:
-            heartbeat()
+            heartbeat_response = heartbeat()
+            reconcile_mqtt_broker(heartbeat_response)
             command = fetch_next_command()
             if command:
                 LOGGER.info("Executing command %s", command["uuid"])
