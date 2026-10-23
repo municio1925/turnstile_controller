@@ -60,13 +60,33 @@ class VideoCamera:
         self.camera_device = None
         self.recording_file = None  # Temporary file path for recording
         self.current_qr_data = None  # Store QR data for filename
+        self.camera_source = os.getenv("CAMERA_SOURCE", "usb").strip().lower() or "usb"
+        self.camera_rtsp_url = os.getenv("CAMERA_RTSP_URL", "").strip()
 
         # Adjust FPS based on actual camera performance during recording
         self.init_camera()
 
     def init_camera(self):
         self.cleanup()
-        self.video, self.camera_device, attempted_candidates = open_camera_capture(cv2, self.FRAME_WIDTH, self.FRAME_HEIGHT)
+        if self.camera_source == "ip":
+            if not self.camera_rtsp_url:
+                logger.error("CAMERA_SOURCE=ip but CAMERA_RTSP_URL is empty.")
+                self.video = None
+                self.out = None
+                record_component_state("camera", False)
+                return
+            preferred_source = self.camera_rtsp_url
+        else:
+            # Preserve the existing ODROID camera discovery behaviour.
+            preferred_source = None
+
+        logger.info("Opening %s camera source.", self.camera_source)
+        self.video, self.camera_device, attempted_candidates = open_camera_capture(
+            cv2,
+            self.FRAME_WIDTH,
+            self.FRAME_HEIGHT,
+            preferred_source=preferred_source,
+        )
 
         timestamp = int(time.time())
         self.recording_file = f"{self.RECORDING_DIR}/temp_{timestamp}_.{self.VIDEO_FORMAT}"

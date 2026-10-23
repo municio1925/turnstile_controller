@@ -41,9 +41,10 @@ def iter_camera_candidates():
         yield candidate
 
 
-def open_camera_capture(cv2, frame_width, frame_height):
+def open_camera_capture(cv2, frame_width, frame_height, preferred_source=None):
+    candidates = [preferred_source] if preferred_source is not None else iter_camera_candidates()
     attempted_candidates = []
-    for candidate in iter_camera_candidates():
+    for candidate in candidates:
         if candidate in attempted_candidates:
             continue
         attempted_candidates.append(candidate)
