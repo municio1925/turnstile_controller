@@ -64,6 +64,22 @@ make install-qr
 make install-cronjob
 ```
 
+### Optional Wiegand reader
+
+USB readers remain the default. To test a GPIO Wiegand reader on one dedicated
+ODROID, configure its `.env` through the device advanced settings:
+
+```dotenv
+READER_TYPE=wiegand
+WIEGAND_D0_PIN=<BCM GPIO line>
+WIEGAND_D1_PIN=<BCM GPIO line>
+WIEGAND_OUTPUT_MODE=raw
+```
+
+The controller logs the complete frame, parity-stripped data, and the standard
+26-bit facility/card representation. Keep `READER_TYPE=usb` on existing
+devices until the GPIO wiring and identifier mapping are verified.
+
 ## QR reader direction mapping
 
 By default, the controller keeps the legacy two-reader mapping:

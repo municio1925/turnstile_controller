@@ -45,6 +45,7 @@ from qr_reader_assignment import (
 )
 from usb_diagnostics import record_component_state
 from utils import SentryLogger
+from wiegand_reader import WiegandReader
 
 sentry_sdk.init(
     dsn=os.getenv("SENTRY_DSN"),
@@ -53,6 +54,8 @@ sentry_sdk.init(
 )
 
 load_dotenv()
+READER_TYPE = os.getenv("READER_TYPE", "usb").strip().lower()
+IS_WIEGAND_READER = READER_TYPE == "wiegand"
 
 
 # Odroid GPIO Compatibility Layer
@@ -143,6 +146,11 @@ def configure_direction_environment(direction, force_reader_refresh=False):
     else:
         return
 
+    if IS_WIEGAND_READER:
+        # Wiegand is explicit opt-in. Never probe USB readers in this mode.
+        os.environ["IS_SERIAL_DEVICE"] = "False"
+        return
+
     if (
         not force_reader_refresh
         and env_value_is_set(os.getenv("QR_USB_DEVICE_PATH"))
@@ -217,6 +225,12 @@ RELAY_ON = GPIO.HIGH if RELAY_TRIGGER == "HIGH" else GPIO.LOW
 RELAY_OFF = GPIO.LOW if RELAY_TRIGGER == "HIGH" else GPIO.HIGH
 OPEN_N_TIMES = int(os.getenv("OPEN_N_TIMES", 1))
 IS_SERIAL_DEVICE = os.getenv("IS_SERIAL_DEVICE", "false").lower() == "true"
+WIEGAND_D0_PIN = os.getenv("WIEGAND_D0_PIN")
+WIEGAND_D1_PIN = os.getenv("WIEGAND_D1_PIN")
+WIEGAND_FRAME_TIMEOUT = float(os.getenv("WIEGAND_FRAME_TIMEOUT", "0.05"))
+WIEGAND_MIN_BITS = int(os.getenv("WIEGAND_MIN_BITS", "4"))
+WIEGAND_MAX_BITS = int(os.getenv("WIEGAND_MAX_BITS", "128"))
+WIEGAND_OUTPUT_MODE = os.getenv("WIEGAND_OUTPUT_MODE", "raw").strip().lower()
 QR_RECONNECT_SLEEP_SECONDS = float(os.getenv("QR_RECONNECT_SLEEP_SECONDS", 1))
 OUTPUT_ENDIAN = os.getenv("OUTPUT_ENDIAN", "big")
 AS_HEX = os.getenv("AS_HEX", "false").lower() == "true"
@@ -333,6 +347,9 @@ def refresh_runtime_reader_assignment(force_reader_refresh=False):
     ENTRANCE_UUID = os.getenv("ENTRANCE_UUID")
     IS_SERIAL_DEVICE = os.getenv("IS_SERIAL_DEVICE", "false").lower() == "true"
     QR_USB_DEVICE_PATH = os.getenv("QR_USB_DEVICE_PATH")
+
+    if IS_WIEGAND_READER:
+        return
 
     if not QR_USB_DEVICE_PATH:
         raise NoDeviceFoundError("No QR reader path configured.")
@@ -799,6 +816,48 @@ async def serial_device_event_loop():
         raise QrDeviceDisconnectedError(str(e)) from e
 
 
+async def wiegand_device_event_loop():
+    """Read optional ODROID GPIO Wiegand input and reuse QR verification."""
+    if WIEGAND_D0_PIN is None or WIEGAND_D1_PIN is None:
+        raise RuntimeError(
+            "READER_TYPE=wiegand requires WIEGAND_D0_PIN and WIEGAND_D1_PIN"
+        )
+
+    reader = WiegandReader(
+        WIEGAND_D0_PIN,
+        WIEGAND_D1_PIN,
+        frame_timeout=WIEGAND_FRAME_TIMEOUT,
+        max_bits=WIEGAND_MAX_BITS,
+    )
+    reader.start()
+    display_on_lcd("Escanea", "codigo Wiegand...")
+    try:
+        loop = asyncio.get_event_loop()
+        while True:
+            frame = await loop.run_in_executor(None, reader.read_frame, 1)
+            if frame is None:
+                continue
+            if frame.bit_count < WIEGAND_MIN_BITS:
+                logger.warning("Ignoring short Wiegand frame: %s bits", frame.bit_count)
+                continue
+
+            logger.info(
+                "Wiegand frame: bits=%s raw=%s data=%s facility_card=%s",
+                frame.bit_count,
+                frame.raw_decimal,
+                frame.data_decimal,
+                frame.facility_and_card,
+            )
+            try:
+                customer = frame.as_string(WIEGAND_OUTPUT_MODE)
+            except ValueError as error:
+                logger.error("Invalid WIEGAND_OUTPUT_MODE=%s: %s", WIEGAND_OUTPUT_MODE, error)
+                continue
+            await verify_customer(customer, int(time.time()))
+    finally:
+        reader.close()
+
+
 def cleanup_serial_queue(ser):
     try:
         ser.reset_input_buffer()
@@ -881,6 +940,10 @@ async def main_loop():
 
 async def run_qr_service_forever():
     while True:
+        if IS_WIEGAND_READER:
+            await wiegand_device_event_loop()
+            continue
+
         dev = init_qr_device()
         try:
             if IS_SERIAL_DEVICE:
