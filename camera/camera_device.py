@@ -48,7 +48,26 @@ def open_camera_capture(cv2, frame_width, frame_height, preferred_source=None):
         if candidate in attempted_candidates:
             continue
         attempted_candidates.append(candidate)
-        video = cv2.VideoCapture(candidate)
+        is_rtsp = isinstance(candidate, str) and candidate.lower().startswith(("rtsp://", "rtsps://"))
+        if is_rtsp:
+            # OpenCV/FFmpeg otherwise lets the RTSP queue grow while the
+            # recorder is idle (health checks read only one frame every few
+            # seconds). Keep the live frame instead of replaying stale video
+            # when a QR trigger arrives.
+            os.environ.setdefault(
+                "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+                "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0",
+            )
+            ffmpeg_backend = getattr(cv2, "CAP_FFMPEG", None)
+            try:
+                video = cv2.VideoCapture(candidate, ffmpeg_backend) if ffmpeg_backend is not None else cv2.VideoCapture(candidate)
+            except TypeError:
+                video = cv2.VideoCapture(candidate)
+            buffer_property = getattr(cv2, "CAP_PROP_BUFFERSIZE", None)
+            if buffer_property is not None:
+                video.set(buffer_property, 1)
+        else:
+            video = cv2.VideoCapture(candidate)
         video.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
         video.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
         if video.isOpened():
