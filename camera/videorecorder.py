@@ -251,7 +251,11 @@ class VideoCamera:
     async def start_recording(self, qr_data):
         """Start video recording."""
         self.current_qr_data = qr_data  # Store QR data for later use
-        if self.video is None or self.out is None:
+        # An RTSP capture kept open while idle can accumulate stale frames in
+        # the OpenCV/FFmpeg queue. Re-open IP streams at the trigger so the
+        # recording starts from the live camera position. USB cameras keep the
+        # existing behavior.
+        if self.camera_source == "ip" or self.video is None or self.out is None:
             self.init_camera()
         if self.video is None or self.out is None:
             logger.error("Camera is not ready for recording.")
