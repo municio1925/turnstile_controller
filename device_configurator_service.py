@@ -39,6 +39,9 @@ PREVIEW_FAST_POLL_UNTIL = 0.0
 DEVICE_SETTINGS_SCHEMA = [
     ("AS_HEX", "bool", False),
     ("CAMERA_ENABLED", "bool", False),
+    # Keep USB as the backwards-compatible default.  IP camera mode is opt-in.
+    ("CAMERA_SOURCE", "str", "usb"),
+    ("CAMERA_RTSP_URL", "str", ""),
     ("CAMERA_TRIGGER_DIRECTIONS", "str", ""),
     ("CAMERA_TRIGGER_MODE", "str", ""),
     ("CONTROL_API_BASE_URL", "str", ""),

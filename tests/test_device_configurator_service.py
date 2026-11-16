@@ -302,6 +302,17 @@ def test_current_device_settings_reports_camera_enabled_from_service_state(monke
     assert settings["CAMERA_ENABLED"] is True
 
 
+def test_current_device_settings_reports_camera_source_and_rtsp_url(monkeypatch):
+    monkeypatch.setenv("CAMERA_SOURCE", "ip")
+    monkeypatch.setenv("CAMERA_RTSP_URL", "rtsp://camera.example/media/video1")
+    monkeypatch.setattr(device_configurator_service, "current_camera_services", lambda: [])
+
+    settings = device_configurator_service.current_device_settings()
+
+    assert settings["CAMERA_SOURCE"] == "ip"
+    assert settings["CAMERA_RTSP_URL"] == "rtsp://camera.example/media/video1"
+
+
 def test_reconcile_qr_services_enables_only_configured_direction(monkeypatch):
     calls = []
     restart_calls = []
